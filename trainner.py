@@ -84,3 +84,6 @@ for epoch in range(num_epochs):
     print(f"Epoch [{epoch + 1}/{num_epochs}] completed.")
 
 print("That's it!")
+
+# visualize the results
+

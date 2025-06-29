@@ -76,6 +76,7 @@ def get_model_instance_segmentation(num_classes):
         num_classes
     )
 
+    return model
 
 def get_transform(train):
     transforms = []
