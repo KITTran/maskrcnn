@@ -4,9 +4,9 @@ import time
 
 import torch
 import torchvision.models.detection.mask_rcnn
-import utils
-from coco_eval import CocoEvaluator
-from coco_utils import get_coco_api_from_dataset
+import mrcnn.utils as utils
+from mrcnn.coco_eval import CocoEvaluator
+from mrcnn.coco_utils import get_coco_api_from_dataset
 
 
 def train_one_epoch(model, optimizer, data_loader, device, epoch, print_freq, scaler=None):
@@ -18,7 +18,7 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch, print_freq, sc
     lr_scheduler = None
     if epoch == 0:
         warmup_factor = 1.0 / 1000
-        warmup_iters = min(1000, len(data_loader) - 1)
+        warmup_iters = min(22, len(data_loader) - 1) 
 
         lr_scheduler = torch.optim.lr_scheduler.LinearLR(
             optimizer, start_factor=warmup_factor, total_iters=warmup_iters

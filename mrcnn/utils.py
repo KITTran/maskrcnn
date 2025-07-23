@@ -3,10 +3,14 @@ import errno
 import os
 import time
 from collections import defaultdict, deque
+import numpy as np
 
 import torch
 import torch.distributed as dist
 
+import matplotlib.pyplot as plt
+import matplotlib.cm as cm
+from matplotlib.patches import Rectangle
 
 class SmoothedValue:
     """Track a series of values and provide access to smoothed values over a
@@ -280,3 +284,112 @@ def init_distributed_mode(args):
     )
     torch.distributed.barrier()
     setup_for_distributed(args.rank == 0)
+
+
+def create_color_mask(masks):
+    """Tạo mask màu với mỗi instance một màu khác nhau"""
+    n_instances = len(masks)
+    if n_instances == 0:
+        return np.zeros((*masks.shape[-2:], 3))
+
+    # Tạo bảng màu ngẫu nhiên cho các instance
+    colors = cm.get_cmap('rainbow')(np.linspace(0, 1, n_instances))[:, :3]
+
+    # Khởi tạo mask màu
+    colored_mask = np.zeros((*masks.shape[-2:], 3))
+
+    # Tô màu cho từng instance
+    for i, mask in enumerate(masks):
+        for c in range(3):
+            colored_mask[:, :, c] = np.where(mask == 1,
+                                             colored_mask[:, :, c] * 0.5 + colors[i][c] * 0.5,
+                                             colored_mask[:, :, c])
+
+    return colored_mask
+
+def visualize_sample(dataset, idx=0, save_path=None):
+    # Lấy một mẫu từ dataset
+    image, target = dataset[idx]
+
+    # Đảo ngược chuẩn hóa
+    # mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+    # std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+    # image = image * std + mean
+    # image = image.clamp(0, 1)
+
+    # Chuyển đổi sang numpy và đổi kênh
+    image = image.permute(1, 2, 0).numpy()
+
+    # Tạo figure với 3 subplot
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 6))
+
+    # Generate colors for instances
+    n_instances = len(target['masks']) if 'masks' in target else 0
+    colors = cm.get_cmap('rainbow')(np.linspace(0, 1, n_instances))[:, :3] if n_instances > 0 else []
+
+    # 1. Hiển thị ảnh gốc với bounding boxes (cùng màu với mask)
+    ax1.imshow(image, cmap='gray')
+    ax1.set_title('Original Image')
+
+    if 'boxes' in target and 'masks' in target:
+        boxes = target['boxes'].numpy()
+        for i, box in enumerate(boxes):
+            x1, y1, x2, y2 = box
+            color = colors[i] if i < len(colors) else 'red'
+            rect = Rectangle((x1, y1), x2 - x1, y2 - y1,
+                             fill=False, color=color, linewidth=2, linestyle='--', alpha=0.8)
+            ax1.add_patch(rect)
+    ax1.axis('off')
+
+    # 2. Hiển thị mask tổng hợp (trắng đen)
+    if 'masks' in target:
+        combined_mask = torch.any(target['masks'], dim=0).numpy()
+        ax2.imshow(combined_mask, cmap='gray')
+        ax2.set_title('Combined Mask')
+        ax2.axis('off')
+
+    # 3. Hiển thị mask nhiều màu với bounding boxes cùng màu
+    if 'masks' in target:
+        masks = target['masks'].numpy()
+        colored_masks = create_color_mask(masks)
+
+        # Kết hợp ảnh gốc với mask màu
+        overlay = image.copy()
+        mask_pixels = colored_masks.sum(axis=-1) > 0
+        overlay[mask_pixels] = image[mask_pixels] * 0.3 + colored_masks[mask_pixels] * 0.7
+
+        ax3.imshow(overlay)
+
+        # Add colored bounding boxes to the overlay
+        if 'boxes' in target:
+            boxes = target['boxes'].numpy()
+            for i, box in enumerate(boxes):
+                x1, y1, x2, y2 = box
+                color = colors[i] if i < len(colors) else 'red'
+                rect = Rectangle((x1, y1), x2 - x1, y2 - y1,
+                                 fill=False, color=color, linewidth=2, linestyle='--', alpha=0.9)
+                ax3.add_patch(rect)
+
+        ax3.set_title(f'Colored Instances (n={len(masks)})')
+        ax3.axis('off')
+
+    plt.suptitle(f'Sample {idx}')
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, bbox_inches='tight', dpi=300)
+        plt.close()
+    else:
+        plt.show()
+
+def visualize_batch(dataset, start_idx=0, num_samples=5, save_dir=None):
+    """Hiển thị nhiều mẫu từ dataset"""
+    for i in range(start_idx, start_idx + num_samples):
+        if i >= len(dataset):
+            break
+        if save_dir:
+            save_path = os.path.join(save_dir, f'sample_{i}.png')
+            os.makedirs(save_dir, exist_ok=True)
+        else:
+            save_path = None
+        visualize_sample(dataset, i, save_path)

@@ -599,3 +599,125 @@ class SimpleCopyPaste(torch.nn.Module):
     def __repr__(self) -> str:
         s = f"{self.__class__.__name__}(blending={self.blending}, resize_interpolation={self.resize_interpolation})"
         return s
+
+class ResizeARwPad(nn.Module):
+    """Resizes an image keeping the aspect ratio and optionally pads to a fixed size.
+
+    Args:
+        min_dim (int, optional): If provided, resizes the image such that its smaller
+            dimension equals min_dim. Only scales up, not down.
+        max_dim (int, optional): Ensures that the image longest side doesn't exceed this value.
+        padding (bool): If True, pads image with zeros so its size is max_dim x max_dim.
+        fill (int): Fill value for padding. Default is 0.
+        padding_mode (str): Padding mode. Default is 'constant'.
+    """
+
+    def __init__(
+        self,
+        min_dim: Optional[int] = None,
+        max_dim: Optional[int] = None,
+        padding: bool = False,
+        fill: int = 0,
+        padding_mode: str = "constant"
+    ):
+        super().__init__()
+        self.min_dim = min_dim
+        self.max_dim = max_dim
+        self.padding = padding
+        self.fill = fill
+        self.padding_mode = padding_mode
+
+        if padding and max_dim is None:
+            raise ValueError("max_dim must be provided when padding=True")
+
+    def forward(
+        self, image: Tensor, target: Optional[Dict[str, Tensor]] = None
+    ) -> Tuple[Tensor, Optional[Dict[str, Tensor]]]:
+
+        if isinstance(image, torch.Tensor):
+            if image.ndimension() not in {2, 3}:
+                raise ValueError(f"image should be 2/3 dimensional. Got {image.ndimension()} dimensions.")
+            elif image.ndimension() == 2:
+                image = image.unsqueeze(0)
+
+        # Get original dimensions
+        _, orig_h, orig_w = F.get_dimensions(image)
+
+        # Default window (y1, x1, y2, x2) and default scale == 1
+        window = (0, 0, orig_h, orig_w)
+        scale = 1.0
+
+        # Calculate scale factor
+        if self.min_dim:
+            # Scale up but not down
+            scale = max(1.0, self.min_dim / min(orig_h, orig_w))
+
+        # Check if it exceeds max dimension
+        if self.max_dim:
+            image_max = max(orig_h, orig_w)
+            if round(image_max * scale) > self.max_dim:
+                scale = self.max_dim / image_max
+
+        # Resize image if scale is not 1
+        if scale != 1.0:
+            new_h = int(round(orig_h * scale))
+            new_w = int(round(orig_w * scale))
+            image = F.resize(image, [new_h, new_w], interpolation=InterpolationMode.BILINEAR)
+
+            # Update target boxes and masks
+            if target is not None:
+                target["boxes"][:, 0::2] *= scale  # x coordinates
+                target["boxes"][:, 1::2] *= scale  # y coordinates
+
+                if "masks" in target:
+                    target["masks"] = F.resize(
+                        target["masks"],
+                        [new_h, new_w],
+                        interpolation=InterpolationMode.NEAREST
+                    )
+
+        # Apply padding if requested
+        if self.padding and self.max_dim:
+            # Get current dimensions after scaling
+            _, curr_h, curr_w = F.get_dimensions(image)
+
+            # Calculate padding
+            top_pad = (self.max_dim - curr_h) // 2
+            bottom_pad = self.max_dim - curr_h - top_pad
+            left_pad = (self.max_dim - curr_w) // 2
+            right_pad = self.max_dim - curr_w - left_pad
+
+            # Apply padding
+            if top_pad > 0 or bottom_pad > 0 or left_pad > 0 or right_pad > 0:
+                padding_list = [left_pad, top_pad, right_pad, bottom_pad]
+                image = F.pad(image, padding_list, self.fill, self.padding_mode)
+
+                # Update window coordinates
+                window = (top_pad, left_pad, curr_h + top_pad, curr_w + left_pad)
+
+                # Update target coordinates
+                if target is not None:
+                    target["boxes"][:, 0::2] += left_pad  # x coordinates
+                    target["boxes"][:, 1::2] += top_pad   # y coordinates
+
+                    if "masks" in target:
+                        target["masks"] = F.pad(
+                            target["masks"],
+                            padding_list,
+                            0,
+                            "constant"
+                        )
+
+        # Store transformation info in target for potential use
+        if target is not None:
+            target["_transform_info"] = {
+                "window": window,
+                "scale": scale,
+                "padding": self.padding
+            }
+
+        return image, target
+
+    def __repr__(self) -> str:
+        return (f"{self.__class__.__name__}(min_dim={self.min_dim}, max_dim={self.max_dim}, "
+                f"padding={self.padding}, fill={self.fill}, padding_mode='{self.padding_mode}')")
